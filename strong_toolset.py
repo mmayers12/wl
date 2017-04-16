@@ -1,5 +1,6 @@
 import pandas as pd
 from datetime import datetime
+from lifts import lbs_to_kg, kg_to_lbs
 import matplotlib.pyplot as plt
 
 
@@ -16,6 +17,10 @@ class TrainingLog(object):
         """
         # Default parent exerciess, in order of priority
         self.parent_exercises = ['Deadlift', 'Pull Up', 'Pull', 'Squat', 'Jerk', 'Clean', 'Snatch', 'Press']
+        self.filename = filename
+        self.weight = None
+
+
 
         self.data = self.parse_csv(filename)
 
@@ -32,6 +37,18 @@ class TrainingLog(object):
         dat = pd.read_csv(filename)
         dat.columns = dat.columns.str.lower().str.replace(' ', '_')
         dat['date'] = pd.to_datetime(dat['date'])
+
+        # Determine weight type
+        if 'kg' in dat:
+            self.weight = 'kg'
+            dat['weight'] = dat['kg']
+            dat['lb'] = dat['kg'].apply(kg_to_lbs)
+        elif 'lb' in dat:
+            self.weight = 'lbs'
+            dat['weight'] = dat['lb']
+            dat['kg'] = dat['lb'].apply(lbs_to_kg)
+        else:
+            raise ValueError("Could not determine weight type: lb or kg not found in csv columns")
 
         # Shoulder Press and Military Press are really just an Overhead Press (or Strict Press in CrossFit)
         dat['exercise_name'] = dat['exercise_name'].str.replace('Shoulder Press', 'Strict Press')
@@ -73,10 +90,44 @@ class TrainingLog(object):
         dat['s2'] = dat['ex2'].apply(self.get_subtype)
 
         # Calculate volume
-        dat['volume'] = dat['reps'] * dat['kg']
+        dat['volume'] = self.calculate_volume(dat)
 
-        return dat
+        # Set the order for the columns in the DataFrame
+        column_order = ['date', 'workout_name', 'exercise_name', 'kg', 'lb', 'set_order', 'reps',
+                        'weight', 'volume', 'ex1', 'ex2', 'p1', 'p2', 's1', 's2', 'notes',
+                        'mi', 'seconds']
 
+        return dat[column_order]
+
+    def calculate_volume(self, df):
+        return df['reps'] * df['weight']
+
+    def change_weight_type(self):
+        """
+        Switches weights reported in data from kg to lbs or vice versa.
+        :return: None
+        """
+        if self.weight == 'kg':
+            self.data['weight'] = self.data['lb']
+            self.data['volume'] = self.calculate_volume(self.data)
+            self.weight = 'lbs'
+        else:
+            self.data['weight'] = self.data['kg']
+            self.data['volume'] = self.calculate_volume(self.data)
+            self.weight = 'kg'
+
+    def get_exercise_max(self, exercise, reps=1, parent=False):
+        """
+        Get the maximum weight lifted for a given exercise
+
+        :param exercise: str, the name of the exercise
+        :param reps: int, the rep max to be found
+        :param parent: bool, look at parent exercise class rather than specific exercises
+        :return: float, the max weight lifted for the given number of reps
+        """
+
+        filtered = self.filter_exercises(exercise, parent)
+        return filtered.query('reps == {}'.format(reps))['weight'].max()
 
     def set_parent_exercises(self, parents):
         """
@@ -152,7 +203,6 @@ class TrainingLog(object):
 
         return filtered
 
-
     def get_weekly_volume(self, exercise, parent=True):
 
         filtered = self.filter_exercises(exercise, parent)
@@ -168,8 +218,34 @@ class TrainingLog(object):
 
         return vol.reset_index()
 
+    def get_data(self):
+        return self.data
 
+    def set_file(self, filename):
+        self.filename = filename
+        self.data = self.parse_csv(filename)
 
+    def set_date_range(self, start=datetime(1900,1,1), end=datetime(2100,12,31)):
+        """
+        Sets a new date range for the data
+        :param start:
+        :param end:
+        :return:
+        """
+        def format_date(date):
+            d = date.__str__().split(' ')[0]
+            d_split = [int(x) for x in d.split('-')]
+            return datetime(d_split[0], d_split[1], d_split[2])
+
+        dat = self.parse_csv(self.filename)
+
+        # Make sure dates are datetime objects or pandas will throw error
+        start = format_date(start)
+        end = format_date(end)
+        # Format the query string
+        q_str = 'date >= {!r} and date < {!r}'.format(start, end)
+        # Set the new date range
+        self.data = dat.query(q_str)
 
 
 class WeightliftingLog(TrainingLog):
@@ -190,7 +266,11 @@ class WeightliftingLog(TrainingLog):
             return TrainingLog.filter_exercises(self, exercise, parent)
         return filtered
 
-    def plot_category_volume():
+    def plot_category_volume(self):
+        """
+        Not yet implemented
+        :return:
+        """
         ps = pd.concat(
             [get_weekly_volume('Squat'),
              get_weekly_volume('Pull'),
@@ -209,7 +289,7 @@ class WeightliftingLog(TrainingLog):
 
         sns.barplot(x='date', y='volume', hue='exercise', data=ps)
         # plt.xticks(rotation='vertical')
-        plt.ylabel('Volume (kg)')
+        plt.ylabel('Volume ({})'.format(self.weight))
         if single_year:
             plt.xlabel('Week of the year')
         else:
