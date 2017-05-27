@@ -2,6 +2,7 @@ import pandas as pd
 from datetime import datetime
 from lifts import lbs_to_kg, kg_to_lbs
 import matplotlib.pyplot as plt
+import seaborn as sns
 
 
 class TrainingLog(object):
@@ -20,10 +21,7 @@ class TrainingLog(object):
         self.filename = filename
         self.weight = None
 
-
-
         self.data = self.parse_csv(filename)
-
 
     def parse_csv(self, filename):
         """
@@ -39,6 +37,7 @@ class TrainingLog(object):
         dat['date'] = pd.to_datetime(dat['date'])
 
         # Determine weight type
+        # TODO MAKE this so it only uses csv type on first import, not on changing date range
         if 'kg' in dat:
             self.weight = 'kg'
             dat['weight'] = dat['kg']
@@ -127,7 +126,14 @@ class TrainingLog(object):
         """
 
         filtered = self.filter_exercises(exercise, parent)
-        return filtered.query('reps == {}'.format(reps))['weight'].max()
+
+        max_weight = filtered.query('reps >= {}'.format(reps))['weight'].max()
+        max_reps = filtered.query('weight == @max_weight')['reps'].max()
+
+        if max_reps > reps:
+            print('Lifted max for {} reps'.format(max_reps))
+
+        return max_weight
 
     def set_parent_exercises(self, parents):
         """
@@ -145,7 +151,6 @@ class TrainingLog(object):
         self.data['p2'] = self.data['ex2'].apply(self.get_parent)
         self.data['s1'] = self.data['ex1'].apply(self.get_parent)
         self.data['s2'] = self.data['ex2'].apply(self.get_parent)
-
 
     def get_parent(self, exercise):
         """
@@ -169,7 +174,7 @@ class TrainingLog(object):
 
     def get_subtype(self, exercise):
 
-        # No subtyoe if no exercise
+        # No subtype if no exercise
         if exercise is None:
             return exercise
 
@@ -189,17 +194,23 @@ class TrainingLog(object):
 
     def group_by_week(self, df):
         # Group by week
-        year_week = lambda x: tuple(x.isocalendar()[:2])
-        grouped = df.groupby(df['date'].map(year_week))
+        week_of_the_year = lambda x: tuple(x.isocalendar()[:2])
+        grouped = df.groupby(df['date'].map(week_of_the_year))
         return grouped
 
     def filter_exercises(self, exercise, parent=True):
 
         # Go for the specific exercise, not the parent category of exercises
-        if not parent:
-            filtered = self.data.query('ex1 == "{0}" | ex2 == "{0}"'.format(exercise))
+        if parent:
+            kind = 'p'
         else:
-            filtered = self.data.query('p1 == "{0}" | p2 == "{0}"'.format(exercise))
+            kind = 'ex'
+
+        if ' and ' in exercise:
+            exs = exercise.split(' and ')
+            filtered = self.data.query('{0}1 == "{1}" & {0}2 == "{2}"'.format(kind, exs[0], exs[1]))
+        else:
+            filtered = self.data.query('{0}1 == "{1}" | {0}2 == "{1}"'.format(kind, exercise))
 
         return filtered
 
@@ -208,10 +219,9 @@ class TrainingLog(object):
         filtered = self.filter_exercises(exercise, parent)
         grouped = self.group_by_week(filtered)
 
-        vol = (grouped
-                 .sum()['volume']
-                 .to_frame()
-                 .reset_index())
+        vol = (grouped.sum()['volume']
+               .to_frame()
+               .reset_index())
 
         vol['exercise'] = exercise
         vol['date'] = vol['date'].apply(lambda x: '{}, Week {}'.format(x[0], x[1]))
@@ -225,7 +235,7 @@ class TrainingLog(object):
         self.filename = filename
         self.data = self.parse_csv(filename)
 
-    def set_date_range(self, start=datetime(1900,1,1), end=datetime(2100,12,31)):
+    def set_date_range(self, start=datetime(1900, 1, 1), end=datetime(2100, 12, 31)):
         """
         Sets a new date range for the data
         :param start:
@@ -240,12 +250,52 @@ class TrainingLog(object):
         dat = self.parse_csv(self.filename)
 
         # Make sure dates are datetime objects or pandas will throw error
-        start = format_date(start)
-        end = format_date(end)
+        if type(start) == str:
+            start = format_date(start)
+        if type(end) == str:
+            end = format_date(end)
+
         # Format the query string
         q_str = 'date >= {!r} and date < {!r}'.format(start, end)
         # Set the new date range
         self.data = dat.query(q_str)
+
+    def plot_exercise_volume(self, exercises, parent=False):
+
+        if type(exercises) == str:
+            self.plot_weekly_volume(self.get_weekly_volume(exercises, parent=parent))
+
+        elif type(exercises) == list:
+            volume_data = pd.concat([self.get_weekly_volume(ex, parent=parent) for ex in exercises])
+            self.plot_weekly_volume(volume_data)
+
+    def plot_weekly_volume(self, volume_data):
+        """
+
+        :return:
+        """
+
+        # See if multiple years
+        single_year = True
+        years = set(volume_data['date'].str.split(', ', expand=True)[0])
+
+        if len(years) > 1:
+            single_year = False
+            volume_data['date'] = volume_data['date'].str.replace(', ', '\n')
+        else:
+            volume_data['date'] = volume_data['date'].str.split(' ', expand=True).iloc[:, -1]
+            volume_data['date'] = volume_data['date'].astype(int)
+
+        # Plot the data
+        sns.barplot(x='date', y='volume', hue='exercise', data=volume_data)
+        # plt.xticks(rotation='vertical')
+        plt.ylabel('Volume ({})'.format(self.weight))
+        if single_year:
+            plt.xlabel('Week of the year')
+        else:
+            plt.xlabel('Year and Week')
+        plt.legend(title='Exercise')
+        plt.title('Weekly volume for each exercise')
 
 
 class WeightliftingLog(TrainingLog):
@@ -271,28 +321,7 @@ class WeightliftingLog(TrainingLog):
         Not yet implemented
         :return:
         """
-        ps = pd.concat(
-            [get_weekly_volume('Squat'),
-             get_weekly_volume('Pull'),
-             get_weekly_volume('Shoulders')])
 
-        # See if multiple years
-        single_year = True
-        years = set(ps['date'].str.split(', ', expand=True)[0])
-
-        if len(years) > 1:
-            single_year = False
-            ps['date'] = ps['date'].str.replace(', ', '\n')
-        else:
-            ps['date'] = ps['date'].str.split(' ', expand=True).iloc[:, -1]
-            ps['date'] = ps['date'].astype(int)
-
-        sns.barplot(x='date', y='volume', hue='exercise', data=ps)
-        # plt.xticks(rotation='vertical')
-        plt.ylabel('Volume ({})'.format(self.weight))
-        if single_year:
-            plt.xlabel('Week of the year')
-        else:
-            plt.xlabel('Year and Week')
+        self.plot_exercise_volume(['Squat', 'Pull', 'Shoulders'], parent=True)
         plt.legend(title='Exercise Category')
-        plt.title('Weekly volume for each exercise type');
+        plt.title('Weekly volume for each exercise category')

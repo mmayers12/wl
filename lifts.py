@@ -1,3 +1,6 @@
+CONV_FACT = 2.20462262
+
+
 def percentage(percent, maximum):
     """
     Calculates the percentage for a given maximum.
@@ -8,6 +11,7 @@ def percentage(percent, maximum):
     :return: int, the percentage of that maximum
     """
     return int(round(maximum*percent / 100))
+
 
 def calculate_percentages(maximum, percentages=None):
     """
@@ -23,7 +27,6 @@ def calculate_percentages(maximum, percentages=None):
     for percent in percentages:
         print("\t{0:>3}%\t-{1:>7}".format(percent, percentage(percent, maximum)))
 
-CONV_FACT = 2.20462262
 
 def kg_to_lbs(weight):
     """
@@ -36,6 +39,7 @@ def kg_to_lbs(weight):
     lbs = weight * CONV_FACT
     # Round to the nearest 100th
     return special_round(lbs)
+
 
 def lbs_to_kg(weight):
     """
@@ -112,4 +116,3 @@ def calculate_lifts(back_squat):
     print("\n --- Pushing Overhead ---")
     # Push Press = 75% of jerk
     print("Push Press: {}".format(percentage(75, jerk)))
-
