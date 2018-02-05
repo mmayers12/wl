@@ -1,3 +1,5 @@
+import numpy as np
+
 CONV_FACT = 2.20462262
 
 
@@ -78,6 +80,95 @@ def special_round(number):
     # If not one of these special cases, do a simple round
     else:
         return round(number, 2)
+
+
+def calc_1rm(weight, reps, formula='Epley'):
+    """
+    Calculates a 1RM from given weight and reps. Different published formulas may be used.
+    
+    According to LeSeur et. al. (doi:10.1519/00124278-199711000-00001) the best formulas per exercise are as follows:
+        Bench Press: Mayhew and Wathan
+        Squat: Wathan
+        Deadlift: There All tend to underestimate by at least 10%
+        
+    Formulas perform best in the <10RM range at loads of 85% or more.
+    
+    :param weight: int, weight lifed
+    :param reps: int, number of reps attained
+    :param formula: str, the formula used to calulate the 1rm: Currently supports the following formulas: 
+        'Epley', 'Brzycki', 'McGlothin', 'Lombardi', 'Mayhew', 'OConner', 'Wathan'. 
+        See https://en.wikipedia.org/wiki/One-repetition_maximum
+     
+    :return: float, calcualted 1RM weight. 
+    """
+
+    if  reps == 1:
+        return weight
+
+    formulas = ['Epley', 'Brzycki', 'McGlothin', 'Lombardi', 'Mayhew', 'OConner', 'Wathan']
+
+    if formula not in formulas:
+        raise ValueError('Formula must be one of {!r}'.format(formulas))
+
+    if formula == 'Epley':
+        return weight*(1+(reps/30))
+    if formula == 'Brzycki':
+        return weight*(36 / (37 - reps))
+    if formula == 'McGlothin':
+        return (100*weight) / (101.3 - 2.67123*reps)
+    if formula == 'Lombardi':
+        return weight*(reps**0.1)
+    if formula == 'Mayhew':
+        return (100*weight) / (52.2+ 41.9*np.exp(-0.055*reps))
+    if formula == 'OConner':
+        return weight*(1 + (reps / 40))
+    if formula == 'Wathan':
+        return (100 * weight) / (48.8 + 53.8*np.exp(-0.075*reps))
+
+
+def calc_rm_from_1rm(one_rm, reps, formula='Epley'):
+    """
+    Given a 1RM and a number of reps, calculates the maximum one_rm that should be attainable for those reps.
+    Essentially the inverse calculation of calc_1rm.
+    
+    According to LeSeur et. al. (doi:10.1519/00124278-199711000-00001) the best formulas per exercise are as follows:
+        Bench Press: Mayhew and Wathan
+        Squat: Wathan
+        Deadlift: There All tend to underestimate by at least 10%
+        
+    Formulas perform best in the <10RM range at loads of 85% or more.
+    
+    :param one_rm: int, one_rm lifed
+    :param reps: int, number of reps attained
+    :param formula: str, the formula used to calulate the 1rm: Currently supports the following formulas: 
+        'Epley', 'Brzycki', 'McGlothin', 'Lombardi', 'Mayhew', 'OConner', 'Wathan'. 
+        See https://en.wikipedia.org/wiki/One-repetition_maximum
+     
+    :return: float, calculated maximum one_rm attainable for the given number of reps. 
+    """
+
+    if  reps == 1:
+        return one_rm
+
+    formulas = ['Epley', 'Brzycki', 'McGlothin', 'Lombardi', 'Mayhew', 'OConner', 'Wathan']
+
+    if formula not in formulas:
+        raise ValueError('Formula must be one of {!r}'.format(formulas))
+
+    if formula == 'Epley':
+        return one_rm / (1 + (reps / 30))
+    if formula == 'Brzycki':
+        return one_rm / (36 / (37 - reps))
+    if formula == 'McGlothin':
+        return (one_rm / 100) * (101.3 - 2.67123 * reps)
+    if formula == 'Lombardi':
+        return one_rm / (reps ** 0.1)
+    if formula == 'Mayhew':
+        return (one_rm / 100) * (52.2 + 41.9 * np.exp(-0.055 * reps))
+    if formula == 'OConner':
+        return one_rm / (1 + (reps / 40))
+    if formula == 'Wathan':
+        return (one_rm / 100) * (48.8 + 53.8 * np.exp(-0.075 * reps))
 
 
 def calculate_lifts(back_squat):
