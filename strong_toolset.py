@@ -1,6 +1,7 @@
+import numpy as np
 import pandas as pd
 from datetime import datetime
-from lifts import lbs_to_kg, kg_to_lbs
+from lifts import lbs_to_kg, kg_to_lbs, calc_1rm, calc_rm_from_1rm
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -20,6 +21,7 @@ class TrainingLog(object):
         self.parent_exercises = ['Deadlift', 'Pull Up', 'Pull', 'Squat', 'Jerk', 'Clean', 'Snatch', 'Press']
         self.filename = filename
         self.weight = None
+        self.formula = 'Epley' # use Epley 1rm formula... may add opetions to change later.
 
         self.data = self.parse_csv(filename)
 
@@ -115,13 +117,15 @@ class TrainingLog(object):
             self.data['volume'] = self.calculate_volume(self.data)
             self.weight = 'kg'
 
-    def get_exercise_max(self, exercise, reps=1, parent=False):
+    def get_exercise_max(self, exercise, reps=1, parent=False, calculate=True, verbose=True):
         """
         Get the maximum weight lifted for a given exercise
 
         :param exercise: str, the name of the exercise
         :param reps: int, the rep max to be found
         :param parent: bool, look at parent exercise class rather than specific exercises
+        :param calculate: bool, calculate the rm if the number of reps has never been performed.
+        :param verbose: bool, print out information when rep max isn't in database 
         :return: float, the max weight lifted for the given number of reps
         """
 
@@ -131,7 +135,29 @@ class TrainingLog(object):
         max_reps = filtered.query('weight == @max_weight')['reps'].max()
 
         if max_reps > reps:
-            print('Lifted max for {} reps'.format(max_reps))
+
+            if verbose:
+                print('Data not found for {} at reps={}.'.format(exercise, reps))
+
+            if calculate:
+                # Because formulas are more accurate on lower rep-counts of 3 or greater,
+                # we will see if we can use a lower weight.
+                if reps > 3:
+                    new_max_weight = filtered.query('reps < {} and reps > 2'.format(reps))['weight'].max()
+                    # Ensure the query worked before updating.
+                    if not np.isnan(new_max_weight):
+                        max_weight = new_max_weight
+                        max_reps = filtered.query('weight == @max_weight')['reps'].max()
+
+                if verbose:
+                    print('Calculating {} rep max from best '.format(reps) +
+                          'attempt: {} reps at {} {}'.format(max_reps, max_weight, self.weight))
+
+                # Calculate the 1rm
+                max_weight = calc_1rm(max_weight, max_reps)
+                if reps != 1:
+                    # Calcualte the rep max from the predicted 1RM
+                    max_weight = calc_rm_from_1rm(max_weight, reps, self.formula)
 
         return max_weight
 
