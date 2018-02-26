@@ -252,7 +252,39 @@ class TrainingLog(object):
         vol['exercise'] = exercise
         vol['date'] = vol['date'].apply(lambda x: '{}, Week {}'.format(x[0], x[1]))
 
-        return vol.reset_index()
+        return vol.reset_index(drop=True)
+
+    def get_weekly_workouts(self):
+
+        grouped = self.group_by_week(self.data)
+
+        workouts = (grouped['date'].nunique()
+                                   .rename('days')
+                                   .to_frame()
+                                   .reset_index())
+
+        workouts['date'] = workouts['date'].apply(lambda x: '{}, Week {}'.format(x[0], x[1]))
+
+        return workouts.reset_index(drop=True)
+
+
+    def find_1rm_over_time(self, data, formula='Epley'):
+        return max([calc_1rm(row.weight, row.reps, formula=formula) for row in data.itertuples()])
+
+    def get_weekly_1rm(self, exercise, parent=True, formula='Epley'):
+
+        filtered = self.filter_exercises(exercise, parent)
+        grouped = self.group_by_week(filtered)
+
+        data = {'maxes': [], 'date': []}
+        for label, week in grouped:
+            data['maxes'].append(self.find_1rm_over_time(week, formula=formula))
+            data['date'].append('{}, Week {}'.format(label[0], label[1]))
+
+        data = pd.DataFrame(data)
+        data['exercise'] = exercise
+
+        return data
 
     def get_data(self):
         return self.data
