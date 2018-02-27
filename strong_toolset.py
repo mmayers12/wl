@@ -240,51 +240,109 @@ class TrainingLog(object):
 
         return filtered
 
+    def fill_missing_weeks(self, data):
+        # if any weeks are missing, fill them in with zeros.
+        first_date = data.iloc[0]['date']
+        last_date = data.iloc[-1]['date']
+
+        date_range = []
+
+        for y in range(first_date[0], last_date[0]+1):
+            for w in range(1, 53):
+                if y == first_date[0] and w < first_date[1]:
+                    continue
+                elif y == last_date[0] and w > last_date[1]:
+                    break
+                date_range.append((y, w))
+
+        all_dates = pd.DataFrame({'date': date_range})
+        return pd.merge(all_dates, data, how='left', on='date').fillna(0)
+
+    def weekly_exercise_information(self, exercise, parent, agg_func, fill_missing=True, add_exercise=True):
+
+        if exercise is not None and parent is not None:
+            filtered = self.filter_exercises(exercise, parent)
+            grouped = self.group_by_week(filtered)
+        else:
+            grouped = self.group_by_week(self.data)
+
+        data = agg_func(grouped)
+
+        if fill_missing:
+            data = self.fill_missing_weeks(data)
+
+        if add_exercise:
+            data['exercise'] = exercise
+
+        data['date'] = data['date'].apply(lambda x: '{}, Week {}'.format(x[0], x[1]))
+
+        return data.reset_index(drop=True)
+
     def get_weekly_volume(self, exercise, parent=True):
 
-        filtered = self.filter_exercises(exercise, parent)
-        grouped = self.group_by_week(filtered)
+        def agg_function(grouped):
+            volume = (grouped.sum()['volume']
+                             .to_frame()
+                             .reset_index())
+            return volume
 
-        vol = (grouped.sum()['volume']
-               .to_frame()
-               .reset_index())
-
-        vol['exercise'] = exercise
-        vol['date'] = vol['date'].apply(lambda x: '{}, Week {}'.format(x[0], x[1]))
-
-        return vol.reset_index(drop=True)
+        return self.weekly_exercise_information(exercise, parent, agg_function)
 
     def get_weekly_workouts(self):
 
-        grouped = self.group_by_week(self.data)
+        def agg_function(grouped):
+            workouts = (grouped['date'].nunique()
+                                       .rename('days')
+                                       .to_frame()
+                                       .reset_index())
+            return workouts
 
-        workouts = (grouped['date'].nunique()
-                                   .rename('days')
-                                   .to_frame()
-                                   .reset_index())
+        return self.weekly_exercise_information(None, None, agg_function, add_exercise=False)
 
-        workouts['date'] = workouts['date'].apply(lambda x: '{}, Week {}'.format(x[0], x[1]))
-
-        return workouts.reset_index(drop=True)
-
-
-    def find_1rm_over_time(self, data, formula='Epley'):
+    def calc_highest_1rm(self, data, formula='Epley'):
         return max([calc_1rm(row.weight, row.reps, formula=formula) for row in data.itertuples()])
 
     def get_weekly_1rm(self, exercise, parent=True, formula='Epley'):
 
-        filtered = self.filter_exercises(exercise, parent)
-        grouped = self.group_by_week(filtered)
+        # Ensure there's a calculated 1rm in the data for each entry
+        self.data['calc_1rm'] = self.data.apply(lambda row: calc_1rm(row['weight'], row['reps'], formula), axis=1)
 
-        data = {'maxes': [], 'date': []}
-        for label, week in grouped:
-            data['maxes'].append(self.find_1rm_over_time(week, formula=formula))
-            data['date'].append('{}, Week {}'.format(label[0], label[1]))
+        def agg_function(grouped):
+            calcd_1rm = (grouped.max()['calc_1rm']
+                                .to_frame()
+                                .reset_index())
+            return calcd_1rm
 
-        data = pd.DataFrame(data)
-        data['exercise'] = exercise
+        return self.weekly_exercise_information(exercise, parent, agg_function, fill_missing=False)
 
-        return data
+    def get_weekly_top_set_weight(self, exercise, parent=True):
+
+        def agg_function(grouped):
+            top_set = (grouped.max()['weight']
+                              .to_frame()
+                              .reset_index()
+                              .rename(columns={'weight': 'top_set'}))
+            return top_set
+        return self.weekly_exercise_information(exercise, parent, agg_function)
+
+    def get_weekly_intensity(self, exercise, parent=True):
+        # Get 1RMs for each week
+        one_rm = self.get_weekly_1rm(exercise, parent)
+
+        # Assuming no De-training, 1rms shouldn't go down over time, so get cumulative 1rm:
+        curr_max = 0
+        for row in one_rm.itertuples():
+            if row.calc_1rm > curr_max:
+                one_rm.loc[row.Index, 'cum_max'] = row.calc_1rm
+                curr_max = row.calc_1rm
+            else:
+                one_rm.loc[row.Index, 'cum_max'] = curr_max
+
+        # Get the top set info for that week to find intensity
+        top_set = self.get_weekly_top_set_weight(exercise, parent)
+        intensity = pd.merge(top_set, one_rm, how='left', on=['date', 'exercise'])
+        intensity['intensity'] = intensity['top_set'] / intensity['cum_max'].fillna(method='ffill')
+        return intensity
 
     def get_data(self):
         return self.data
