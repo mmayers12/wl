@@ -18,12 +18,15 @@ class TrainingLog(object):
         :param filename: Name of the .csv to be imported
         """
         # Default parent exerciess, in order of priority
-        self.parent_exercises = ['Deadlift', 'Pull Up', 'Pull', 'Squat', 'Jerk', 'Clean', 'Snatch', 'Press']
+        self.parent_exercises = ['Deadlift', 'Pull Up', 'Pull', 'Squat', 'Jerk', 'Row', 'Drive',
+                                 'Clean', 'Snatch', 'Push Press', 'Press', 'Assistance']
+        self.sub_exercises = {'Lift-Off': 'Pull', 'Balance': 'Push Press'}
         self.filename = filename
         self.weight = None
         self.formula = 'Epley' # use Epley 1rm formula... may add opetions to change later.
 
         self.data = self.parse_csv(filename)
+        self.orig_data = self.data.copy()
 
     def parse_csv(self, filename):
         """
@@ -53,6 +56,7 @@ class TrainingLog(object):
 
         # Shoulder Press and Military Press are really just an Overhead Press (or Strict Press in CrossFit)
         dat['exercise_name'] = dat['exercise_name'].str.replace('Shoulder Press', 'Strict Press')
+        dat['exercise_name'] = dat['exercise_name'].str.replace('Overhead Press', 'Strict Press')
         dat['exercise_name'] = dat['exercise_name'].str.replace('Military Press', 'Strict Press')
 
         # Complexes are 2 exercises in one, they should be parsed differently
@@ -159,6 +163,11 @@ class TrainingLog(object):
                     # Calcualte the rep max from the predicted 1RM
                     max_weight = calc_rm_from_1rm(max_weight, reps, self.formula)
 
+            # Not Calculating, so just print out how many reps this weight was achieved at.
+            else:
+                if verbose:
+                    print('Reps at max weight: {}'.format(max_reps))
+
         return max_weight
 
     def set_parent_exercises(self, parents):
@@ -193,8 +202,13 @@ class TrainingLog(object):
         if exercise is None:
             return exercise
 
+        # Find out if we have a sub exercise first
+        for ex, parent in self.sub_exercises.items():
+            if ex in exercise:
+                return parent
+
+        # If not a sub exercise, then find the parent
         for ex in self.parent_exercises:
-            # Find out which parent name is in the exercise
             if ex in exercise:
                 return ex
 
@@ -347,9 +361,13 @@ class TrainingLog(object):
     def get_data(self):
         return self.data
 
+    def get_weight(self):
+        return self.weight
+
     def set_file(self, filename):
         self.filename = filename
         self.data = self.parse_csv(filename)
+        self.orig_data = self.data.copy()
 
     def set_date_range(self, start=datetime(1900, 1, 1), end=datetime(2100, 12, 31)):
         """
@@ -363,8 +381,6 @@ class TrainingLog(object):
             d_split = [int(x) for x in d.split('-')]
             return datetime(d_split[0], d_split[1], d_split[2])
 
-        dat = self.parse_csv(self.filename)
-
         # Make sure dates are datetime objects or pandas will throw error
         if type(start) == str:
             start = format_date(start)
@@ -374,44 +390,7 @@ class TrainingLog(object):
         # Format the query string
         q_str = 'date >= {!r} and date < {!r}'.format(start, end)
         # Set the new date range
-        self.data = dat.query(q_str)
-
-    def plot_exercise_volume(self, exercises, parent=False):
-
-        if type(exercises) == str:
-            self.plot_weekly_volume(self.get_weekly_volume(exercises, parent=parent))
-
-        elif type(exercises) == list:
-            volume_data = pd.concat([self.get_weekly_volume(ex, parent=parent) for ex in exercises])
-            self.plot_weekly_volume(volume_data)
-
-    def plot_weekly_volume(self, volume_data):
-        """
-
-        :return:
-        """
-
-        # See if multiple years
-        single_year = True
-        years = set(volume_data['date'].str.split(', ', expand=True)[0])
-
-        if len(years) > 1:
-            single_year = False
-            volume_data['date'] = volume_data['date'].str.replace(', ', '\n')
-        else:
-            volume_data['date'] = volume_data['date'].str.split(' ', expand=True).iloc[:, -1]
-            volume_data['date'] = volume_data['date'].astype(int)
-
-        # Plot the data
-        sns.barplot(x='date', y='volume', hue='exercise', data=volume_data)
-        # plt.xticks(rotation='vertical')
-        plt.ylabel('Volume ({})'.format(self.weight))
-        if single_year:
-            plt.xlabel('Week of the year')
-        else:
-            plt.xlabel('Year and Week')
-        plt.legend(title='Exercise')
-        plt.title('Weekly volume for each exercise')
+        self.data = self.orig_data.query(q_str).reset_index(drop=True)
 
 
 class WeightliftingLog(TrainingLog):
@@ -426,18 +405,8 @@ class WeightliftingLog(TrainingLog):
             filtered = self.data.query('p1 in {0} | p2 in {0}'.format(pulls))
         # Special Case for Shoulder to Overhead type movements
         elif exercise == 'Shoulders':
-            oh = ['Jerk', 'Press']
+            oh = ['Jerk', 'Press', 'Push Press']
             filtered = self.data.query('p1 in {0} | p2 in {0}'.format(oh))
         else:
             return TrainingLog.filter_exercises(self, exercise, parent)
         return filtered
-
-    def plot_category_volume(self):
-        """
-        Not yet implemented
-        :return:
-        """
-
-        self.plot_exercise_volume(['Squat', 'Pull', 'Shoulders'], parent=True)
-        plt.legend(title='Exercise Category')
-        plt.title('Weekly volume for each exercise category')
