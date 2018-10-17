@@ -11,19 +11,26 @@ class TrainingLog(object):
     A class to contain all of the training data from a strong .csv export
     """
 
-    def __init__(self, filename):
+    def __init__(self, filename, units=None):
         """
         Initialzes training log from a strong .csv export
 
         :param filename: Name of the .csv to be imported
+        :param units: str, either 'kg' or 'lbs'.  Needed for newer versions fo strong export that do not have
+            units as a column header
         """
         # Default parent exerciess, in order of priority
         self.parent_exercises = ['Deadlift', 'Pull Up', 'Pull', 'Squat', 'Jerk', 'Row', 'Drive',
                                  'Clean', 'Snatch', 'Push Press', 'Press', 'Assistance']
         self.sub_exercises = {'Lift-Off': 'Pull', 'Balance': 'Push Press'}
         self.filename = filename
-        self.weight = None
+
+        # Make sure units are of appropriate type
+        assert units in ['kg', 'lbs', None]
+        self.units = units
+
         self.formula = 'Epley' # use Epley 1rm formula... may add opetions to change later.
+        self.new_version = False
 
         self.data = self.parse_csv(filename)
         self.orig_data = self.data.copy()
@@ -44,17 +51,29 @@ class TrainingLog(object):
         # Determine weight type
         # TODO MAKE this so it only uses csv type on first import, not on changing date range
         if 'kg' in dat:
-            self.weight = 'kg'
+            self.units = 'kg'
             dat['weight'] = dat['kg']
             dat['lb'] = dat['kg'].apply(kg_to_lbs)
         elif 'lb' in dat:
-            self.weight = 'lbs'
+            self.units = 'lbs'
             dat['weight'] = dat['lb']
             dat['kg'] = dat['lb'].apply(lbs_to_kg)
+        elif 'weight' in dat:
+            self.new_version = True
+            if self.units is None:
+                raise ValueError("Could not determine weight type: lb or kg not found in csv columns. " +
+                                 "Please units=['kg', lbs'] argument")
+            # Set the correct weights to match the units
+            if self.units == 'kg':
+                dat['lb'] = dat['weight'].apply(kg_to_lbs)
+                dat['kg'] = dat['weight']
+            elif self.units == 'lbs':
+                dat['kg'] = dat['weight'].apply(lbs_to_kg)
+                dat['lb'] = dat['weight']
         else:
-            raise ValueError("Could not determine weight type: lb or kg not found in csv columns")
+            raise ValueError("Could not determine weight type: lb, kg, or weight not found in csv columns.")
 
-        # Shoulder Press and Military Press are really just an Overhead Press (or Strict Press in CrossFit)
+            # Shoulder Press and Military Press are really just an Overhead Press (or Strict Press in CrossFit)
         dat['exercise_name'] = dat['exercise_name'].str.replace('Shoulder Press', 'Strict Press')
         dat['exercise_name'] = dat['exercise_name'].str.replace('Overhead Press', 'Strict Press')
         dat['exercise_name'] = dat['exercise_name'].str.replace('Military Press', 'Strict Press')
@@ -102,6 +121,13 @@ class TrainingLog(object):
                         'weight', 'volume', 'ex1', 'ex2', 'p1', 'p2', 's1', 's2', 'notes',
                         'mi', 'seconds']
 
+        # New version no longer has distance units in column headers, instead just 'Distance'
+        #TODO Make some kind of unit Determination for distance
+        if self.new_version:
+            ix = column_order.index('mi')
+            column_order[ix] = 'distance'
+
+
         return dat[column_order]
 
     def calculate_volume(self, df):
@@ -112,14 +138,14 @@ class TrainingLog(object):
         Switches weights reported in data from kg to lbs or vice versa.
         :return: None
         """
-        if self.weight == 'kg':
+        if self.units == 'kg':
             self.data['weight'] = self.data['lb']
             self.data['volume'] = self.calculate_volume(self.data)
-            self.weight = 'lbs'
+            self.units = 'lbs'
         else:
             self.data['weight'] = self.data['kg']
             self.data['volume'] = self.calculate_volume(self.data)
-            self.weight = 'kg'
+            self.units = 'kg'
 
     def get_exercise_max(self, exercise, reps=1, parent=False, calculate=True, verbose=True):
         """
@@ -155,7 +181,7 @@ class TrainingLog(object):
 
                 if verbose:
                     print('Calculating {} rep max from best '.format(reps) +
-                          'attempt: {} reps at {} {}'.format(max_reps, max_weight, self.weight))
+                          'attempt: {} reps at {} {}'.format(max_reps, max_weight, self.units))
 
                 # Calculate the 1rm
                 max_weight = calc_1rm(max_weight, max_reps)
@@ -362,7 +388,7 @@ class TrainingLog(object):
         return self.data
 
     def get_weight(self):
-        return self.weight
+        return self.units
 
     def set_file(self, filename):
         self.filename = filename
@@ -394,8 +420,8 @@ class TrainingLog(object):
 
 
 class WeightliftingLog(TrainingLog):
-    def __init__(self, filename):
-        TrainingLog.__init__(self, filename)
+    def __init__(self, filename,  units=None):
+        TrainingLog.__init__(self, filename, units)
 
     def filter_exercises(self, exercise, parent=True):
         # Query for Ex
