@@ -1,9 +1,8 @@
+import copy
 import numpy as np
 import pandas as pd
-from datetime import datetime
+import datetime
 from lifts import lbs_to_kg, kg_to_lbs, calc_1rm, calc_rm_from_1rm
-import matplotlib.pyplot as plt
-import seaborn as sns
 
 
 class TrainingLog(object):
@@ -46,10 +45,9 @@ class TrainingLog(object):
         # Read to DataFrame and do some data normalization
         dat = pd.read_csv(filename)
         dat.columns = dat.columns.str.lower().str.replace(' ', '_')
-        dat['date'] = pd.to_datetime(dat['date'])
+        dat['date'] = pd.to_datetime(dat['date']).apply(lambda d: d.date())
 
         # Determine weight type
-        # TODO MAKE this so it only uses csv type on first import, not on changing date range
         if 'kg' in dat:
             self.units = 'kg'
             dat['weight'] = dat['kg']
@@ -73,15 +71,19 @@ class TrainingLog(object):
         else:
             raise ValueError("Could not determine weight type: lb, kg, or weight not found in csv columns.")
 
-            # Shoulder Press and Military Press are really just an Overhead Press (or Strict Press in CrossFit)
+        # Shoulder Press and Military Press are really just an Overhead Press (or Strict Press in CrossFit)
+        dat['exercise_name'] = dat['exercise_name'].str.replace('Strict Military Press', 'Strict Press')
         dat['exercise_name'] = dat['exercise_name'].str.replace('Shoulder Press', 'Strict Press')
         dat['exercise_name'] = dat['exercise_name'].str.replace('Overhead Press', 'Strict Press')
         dat['exercise_name'] = dat['exercise_name'].str.replace('Military Press', 'Strict Press')
 
+        # Clean and Jerk should be 'Clean and Split Jerk' cuz I don't power (and if I did it would be noted)
+        dat['exercise_name'] = dat['exercise_name'].str.replace('Clean and Jerk', 'Clean and Split Jerk')
+
         # Complexes are 2 exercises in one, they should be parsed differently
         # Replace and with + for easy splitting of complexes
-        names = dat['exercise_name'].str.replace('and', '+')
-        names = names.str.replace('Into', '+')
+        names = dat['exercise_name'].str.replace(' and ', ' + ')
+        names = names.str.replace(' Into ', ' + ')
 
         # 'Shrug + Clean' is really 'Clean Pull + Clean', however, don't overwrite standard barbell shrugs
         names[names.str.contains('Clean')] = names[names.str.contains('Clean')].str.replace('Shrug', 'Clean Pull')
@@ -114,7 +116,7 @@ class TrainingLog(object):
         dat['s2'] = dat['ex2'].apply(self.get_subtype)
 
         # Calculate volume
-        dat['volume'] = self.calculate_volume(dat)
+        dat['volume'] = self._calculate_volume(dat)
 
         # Set the order for the columns in the DataFrame
         column_order = ['date', 'workout_name', 'exercise_name', 'kg', 'lb', 'set_order', 'reps',
@@ -130,7 +132,8 @@ class TrainingLog(object):
 
         return dat[column_order]
 
-    def calculate_volume(self, df):
+    @staticmethod
+    def _calculate_volume(df):
         return df['reps'] * df['weight']
 
     def change_weight_type(self):
@@ -140,11 +143,11 @@ class TrainingLog(object):
         """
         if self.units == 'kg':
             self.data['weight'] = self.data['lb']
-            self.data['volume'] = self.calculate_volume(self.data)
+            self.data['volume'] = self._calculate_volume(self.data)
             self.units = 'lbs'
         else:
             self.data['weight'] = self.data['kg']
-            self.data['volume'] = self.calculate_volume(self.data)
+            self.data['volume'] = self._calculate_volume(self.data)
             self.units = 'kg'
 
     def get_exercise_max(self, exercise, reps=1, parent=False, calculate=True, verbose=True):
@@ -239,16 +242,24 @@ class TrainingLog(object):
                 return ex
 
     def get_subtype(self, exercise):
+        """
+        Determines the sub-category for an exercise
+
+        :param exercise: String, the name of the exercise
+        :return:
+        """
 
         # No subtype if no exercise
         if exercise is None:
             return exercise
 
+        # No subtype if it is the parent version of the exercise
+        if exercise in self.parent_exercises:
+            return None
+
         # Find the parent, remove it, and the remainder of the name is the subtype
         for par in self.parent_exercises:
-            if par == exercise:
-                return None
-            elif par in exercise:
+            if par in exercise:
                 # Subtype label can either lead or trial exercise name
                 out = exercise.split(par)
                 if out[0]:
@@ -258,14 +269,14 @@ class TrainingLog(object):
                 else:
                     return None
 
-    def group_by_week(self, df):
+    @staticmethod
+    def _group_by_week(df):
         # Group by week
         week_of_the_year = lambda x: tuple(x.isocalendar()[:2])
         grouped = df.groupby(df['date'].map(week_of_the_year))
         return grouped
 
     def filter_exercises(self, exercise, parent=True):
-
         # Go for the specific exercise, not the parent category of exercises
         if parent:
             kind = 'p'
@@ -280,7 +291,8 @@ class TrainingLog(object):
 
         return filtered
 
-    def fill_missing_weeks(self, data):
+    @staticmethod
+    def _fill_missing_weeks(data):
         # if any weeks are missing, fill them in with zeros.
         first_date = data.iloc[0]['date']
         last_date = data.iloc[-1]['date']
@@ -302,14 +314,14 @@ class TrainingLog(object):
 
         if exercise is not None and parent is not None:
             filtered = self.filter_exercises(exercise, parent)
-            grouped = self.group_by_week(filtered)
+            grouped = self._group_by_week(filtered)
         else:
-            grouped = self.group_by_week(self.data)
+            grouped = self._group_by_week(self.data)
 
         data = agg_func(grouped)
 
         if fill_missing:
-            data = self.fill_missing_weeks(data)
+            data = self._fill_missing_weeks(data)
 
         if add_exercise:
             data['exercise'] = exercise
@@ -395,28 +407,143 @@ class TrainingLog(object):
         self.data = self.parse_csv(filename)
         self.orig_data = self.data.copy()
 
-    def set_date_range(self, start=datetime(1900, 1, 1), end=datetime(2100, 12, 31)):
+    @staticmethod
+    def _format_date(date):
+        if type(date) == datetime.datetime:
+            return date.date()
+        elif type(date) == str:
+            d = date.__str__().split(' ')[0]
+            d_split = [int(x) for x in d.split('-')]
+            return datetime.date(d_split[0], d_split[1], d_split[2])
+        else:
+            raise TypeError('Dates must be given as either "YYYY-MM-DD" formatted strings, ' +
+                            'datetime.date, datetime.datetime')
+
+    def copy(self):
+        return copy.copy(self)
+
+    def set_date_range(self, start=datetime.date(1900, 1, 1), end=datetime.date(2100, 12, 31), inplace=False):
         """
         Sets a new date range for the data
         :param start:
         :param end:
+        :param inplace:
         :return:
         """
-        def format_date(date):
-            d = date.__str__().split(' ')[0]
-            d_split = [int(x) for x in d.split('-')]
-            return datetime(d_split[0], d_split[1], d_split[2])
-
-        # Make sure dates are datetime objects or pandas will throw error
-        if type(start) == str:
-            start = format_date(start)
-        if type(end) == str:
-            end = format_date(end)
+        # Make sure dates are date objects or pandas will throw error
+        if type(start) != datetime.date:
+            start = self._format_date(start)
+        if type(end) != datetime.date:
+            end = self._format_date(end)
 
         # Format the query string
-        q_str = 'date >= {!r} and date < {!r}'.format(start, end)
-        # Set the new date range
-        self.data = self.orig_data.query(q_str).reset_index(drop=True)
+        q_str = 'date >= {!r} and date <= {!r}'.format(start, end)
+
+        if inplace:
+            # Set the new date range
+            self.data = self.orig_data.query(q_str).reset_index(drop=True)
+        else:
+            out = self.copy()
+            out.data = out.orig_data.query(q_str).reset_index(drop=True)
+            return out
+
+    def find_cycle_prs(self, cycle_start_date, cycle_end_date='2100-12-31', exercises=None,
+                       rep_range=range(1, 13), previous_pr_start_date='1900-01-01'):
+        """
+        Routine to find all PRs attained during a training cycle. Will return both new rep-scheme PRs as well as
+        absolute PRs. Boolean column 'absolute_max' will be True if this is the most weight lifted for a given
+        exercise at any rep-range.
+
+        :param cycle_start_date: str, datetime.date, or datetime.datetime, the start date for the cycle. Strings must
+            be formatted as YYYY-MM-DD
+        :param cycle_end_date: the end date for the training cycle. If none given, will use till end of training log.
+            See `cycle_start_date` for foramming options
+        :param exercises: list, names of exercises to check for PRs.  If none give, all exercises will be checked.
+        :param rep_range: list or range of ints, rep numbers to check for PRs on.
+        :param previous_pr_start_date: Start date to check for previous PRs. For example, if you got sick and only
+            want to see progress since date returning from illness, you can limit this before time for PR comparison.
+            see `cycle_start_date` for formatting options
+
+        :return: DataFrame, exercises with PRs will be returned with old and new weight and rep values.
+        """
+
+        # Cut dates for before and after the split
+        before_data = self.set_date_range(start=previous_pr_start_date, end=cycle_start_date)
+        after_data = self.set_date_range(start=cycle_start_date, end=cycle_end_date)
+
+        # Most useful column order for output
+        col_order = ['exercise', 'reps', 'previous_max', 'new_max', 'weight_increase', 'rep_increase', 'new_reps',
+                     'absolute_max']
+
+        # Find exercises logged both before and after the split
+        common_exercises = (set(before_data.get_data()['ex1'].unique()) |
+                            set(before_data.get_data()['ex2'].dropna().unique()) &
+                            set(after_data.get_data()['ex1'].unique()) |
+                            set(after_data.get_data()['ex2'].dropna().unique()))
+
+        # If no exercises supplied, use all common
+        if exercises is None:
+            exercises = sorted(list(common_exercises))
+        else:
+            # Otherwise ensure that there is overlap for these exercises...
+            exercises = sorted(list(set(exercises) & common_exercises), key=lambda e: exercises.index(e))
+
+        # Grab all maxes for given rep ranges from before split date
+        before_maxes = []
+        for ex in exercises:
+            for num_reps in rep_range:
+                rep_max = before_data.get_exercise_max(ex, num_reps, calculate=False, verbose=False)
+                before_maxes.append({'exercise': ex, 'reps': num_reps, 'previous_max': rep_max})
+        before_maxes = pd.DataFrame(before_maxes)
+
+        # And grab all for after split date
+        after_maxes = []
+        for ex in exercises:
+            for num_reps in rep_range:
+                rep_max = after_data.get_exercise_max(ex, num_reps, calculate=False, verbose=False)
+                after_maxes.append({'exercise': ex, 'reps': num_reps, 'new_max': rep_max})
+        after_maxes = pd.DataFrame(after_maxes)
+
+        # Merge exercises and reps so new weights for a given rep-scheme are paired
+        changes = pd.merge(before_maxes, after_maxes, on=['exercise', 'reps'])
+        # Only want the ones where the weight went up
+        increases = changes.query('new_max > previous_max')
+
+        # If no increases, return an empty DataFrame
+        if increases.shape[0] < 1:
+            return pd.DataFrame(columns=col_order)
+
+        # Find out which ones are new maxes for the exercise at any rep scheme
+        absolute_inc = increases.query('reps == 1')[['exercise', 'previous_max', 'new_max']]
+        absolute_inc['absolute_max'] = True
+
+        # Gets rid of cases where before and after 3RM == 4RM == 5RM and all increased
+        # will only keep the 5RM
+        all_prs = increases.drop_duplicates(subset=['exercise', 'new_max', 'previous_max'], keep='last')
+
+        # Merge in the absolute maxes and label non-absolute maxes as such
+        all_prs = all_prs.merge(absolute_inc, on=['exercise', 'new_max', 'previous_max'], how='left')
+        all_prs['absolute_max'] = all_prs['absolute_max'].fillna(False)
+
+        # Get Increaeses
+        all_prs['weight_increase'] = all_prs['new_max'] - all_prs['previous_max']
+
+        # Get rid of duplications where new weight lifted for more reps
+        # e.g. previous 3rm = 60kg, previous 4RM == 5RM = 56kg,
+        #     New 4RM = 62kg and new 5RM == 59kg.
+        #     Only want to know 3RM @ 60 -> 4RM at 62, and 5RM @ 56 -> 5RM @ 59.
+        #     Don't care about 4RM @ 56 -> 4RM @ 62, cuz that is redundant
+
+        # Get the max weight for a number of reps
+        best_reps = all_prs.groupby(['exercise', 'new_max'])['reps'].max().rename('new_reps').reset_index()
+        # Merge the new rep values in, and drop cases
+        all_prs = all_prs.merge(best_reps, on=['exercise', 'new_max'])
+        all_prs = all_prs.drop_duplicates(subset=['exercise', 'new_max', 'new_reps']).reset_index(drop=True)
+
+        # flag for if reps increased as well as weight
+        all_prs['rep_increase'] = all_prs['new_reps'] > all_prs['reps']
+
+        return all_prs[col_order]
 
 
 class WeightliftingLog(TrainingLog):
