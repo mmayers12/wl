@@ -494,7 +494,7 @@ class TrainingLog(object):
             for num_reps in rep_range:
                 rep_max = before_data.get_exercise_max(ex, num_reps, calculate=False, verbose=False)
                 before_maxes.append({'exercise': ex, 'reps': num_reps, 'previous_max': rep_max})
-        before_maxes = pd.DataFrame(before_maxes)
+        before_maxes = pd.DataFrame(before_maxes).fillna(0)
 
         # And grab all for after split date
         after_maxes = []
@@ -502,12 +502,12 @@ class TrainingLog(object):
             for num_reps in rep_range:
                 rep_max = after_data.get_exercise_max(ex, num_reps, calculate=False, verbose=False)
                 after_maxes.append({'exercise': ex, 'reps': num_reps, 'new_max': rep_max})
-        after_maxes = pd.DataFrame(after_maxes)
+        after_maxes = pd.DataFrame(after_maxes).fillna(0)
 
         # Merge exercises and reps so new weights for a given rep-scheme are paired
         changes = pd.merge(before_maxes, after_maxes, on=['exercise', 'reps'])
-        # Only want the ones where the weight went up
-        increases = changes.query('new_max > previous_max')
+        # Only want the ones where the weight went up or reps went up... will filter for rep increases later
+        increases = changes.query('new_max >= previous_max')
 
         # If no increases, return an empty DataFrame
         if increases.shape[0] < 1:
@@ -538,9 +538,11 @@ class TrainingLog(object):
         best_reps = all_prs.groupby(['exercise', 'new_max'])['reps'].max().rename('new_reps').reset_index()
         # Merge the new rep values in, and drop cases
         all_prs = all_prs.merge(best_reps, on=['exercise', 'new_max'])
-        all_prs = all_prs.drop_duplicates(subset=['exercise', 'new_max', 'new_reps']).reset_index(drop=True)
+        all_prs = all_prs.drop_duplicates(subset=['exercise', 'new_max', 'new_reps'])
+        # Filter for weight or rep increases, and no insta-PRs (where reps that high have never been performed before)
+        all_prs = all_prs.query('(new_reps > reps or weight_increase > 0) and previous_max != 0').reset_index(drop=True)
 
-        # flag for if reps increased as well as weight
+        # flag for if it's a new rep-max PR
         all_prs['rep_increase'] = all_prs['new_reps'] > all_prs['reps']
 
         return all_prs[col_order]
