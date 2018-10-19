@@ -2,6 +2,7 @@ import copy
 import numpy as np
 import pandas as pd
 import datetime
+import warnings
 from lifts import lbs_to_kg, kg_to_lbs, calc_1rm, calc_rm_from_1rm
 
 
@@ -29,7 +30,6 @@ class TrainingLog(object):
         self.units = units
 
         self.formula = 'Epley' # use Epley 1rm formula... may add opetions to change later.
-        self.new_version = False
 
         self.data = self.parse_csv(filename)
         self.orig_data = self.data.copy()
@@ -47,29 +47,35 @@ class TrainingLog(object):
         dat.columns = dat.columns.str.lower().str.replace(' ', '_')
         dat['date'] = pd.to_datetime(dat['date']).apply(lambda d: d.date())
 
-        # Determine weight type
-        if 'kg' in dat:
-            self.units = 'kg'
-            dat['weight'] = dat['kg']
-            dat['lb'] = dat['kg'].apply(kg_to_lbs)
-        elif 'lb' in dat:
-            self.units = 'lbs'
-            dat['weight'] = dat['lb']
-            dat['kg'] = dat['lb'].apply(lbs_to_kg)
-        elif 'weight' in dat:
-            self.new_version = True
-            if self.units is None:
-                raise ValueError("Could not determine weight type: lb or kg not found in csv columns. " +
-                                 "Please units=['kg', lbs'] argument")
-            # Set the correct weights to match the units
-            if self.units == 'kg':
-                dat['lb'] = dat['weight'].apply(kg_to_lbs)
-                dat['kg'] = dat['weight']
-            elif self.units == 'lbs':
-                dat['kg'] = dat['weight'].apply(lbs_to_kg)
-                dat['lb'] = dat['weight']
+        # Determine if file is new version new version has 'weight', old had 'lb' or 'kg'
+        units = self._determine_units_from_file(dat)
+        new_version = units is None
+
+        # New version needs units supplied
+        if new_version:
+            units = self.units
+            dat[units] = dat['weight']
+        # Old version needs 'weight' column
         else:
-            raise ValueError("Could not determine weight type: lb, kg, or weight not found in csv columns.")
+            dat['weight'] = dat[units[:2]]
+
+        # Ensure we got the right kind of units, othewise we need a value error
+        if units is None and self.units is None:
+            raise ValueError("Could not determine weight type: lb or kg not found in csv columns. " +
+                             "Please units=['kg', lbs'] argument")
+
+        # Store the new units...
+        if self.units is None:
+            self.units = units
+
+        if units == 'kg':
+            dat['lb'] = dat['weight'].apply(kg_to_lbs)
+        else:
+            dat['kg'] = dat['weight'].apply(lbs_to_kg)
+
+        # Determine if 0 or 1 indexed for set order and set to zero indexed
+        if 0 not in dat['set_order'].values:
+            dat['set_order'] -= 1
 
         # Shoulder Press and Military Press are really just an Overhead Press (or Strict Press in CrossFit)
         dat['exercise_name'] = dat['exercise_name'].str.replace('Strict Military Press', 'Strict Press')
@@ -79,6 +85,11 @@ class TrainingLog(object):
 
         # Clean and Jerk should be 'Clean and Split Jerk' cuz I don't power (and if I did it would be noted)
         dat['exercise_name'] = dat['exercise_name'].str.replace('Clean and Jerk', 'Clean and Split Jerk')
+
+        # Get the exercise orders in case we need to sort later
+        exercise_order = dat.groupby(['date']).apply(
+            lambda x: {e: n for e, n in zip(x['exercise_name'].unique(), range(x['exercise_name'].nunique()))})
+        dat['ex_order'] = dat.apply(lambda row: exercise_order.loc[row['date']][row['exercise_name']], axis=1)
 
         # Complexes are 2 exercises in one, they should be parsed differently
         # Replace and with + for easy splitting of complexes
@@ -91,19 +102,24 @@ class TrainingLog(object):
         names = names.str.replace('OHS', 'Overhead Squat')
         names = names.str.replace('Over Head Squat', 'Overhead Squat')
 
-        # Some exercises had notes written in parenthesis after the exercise
+        # Some exercises may have notes written in parenthesis after the exercise
         # Add the notes to the notes
-        notes = names.str.split('(', expand=True)[1]
-        notes = notes.str.strip(')')
-        dat['notes'].fillna(notes, inplace=True)
-        # Remove the notes from the exercise name
-        names = names.str.split('(', expand=True)[0]
-        names = names.str.strip()
+        if names.apply(lambda s: '(' in s).sum() > 1:
+            notes = names.str.split('(', expand=True)[1]
+            notes = notes.str.strip(')')
+            dat['notes'] = notes
+            # Remove the notes from the exercise name
+            names = names.str.split('(', expand=True)[0]
+            names = names.str.strip()
 
         # Split out the complexes
-        split_df = names.str.split('+', expand=True)
-        dat['ex1'] = split_df[0]
-        dat['ex2'] = split_df[1]
+        if names.apply(lambda s: '+' in s).sum() > 1:
+            split_df = names.str.split('+', expand=True)
+            dat['ex1'] = split_df[0]
+            dat['ex2'] = split_df[1]
+        else:
+            dat['ex1'] = names
+            dat['ex2'] = None
 
         # Strip any whitespace that may be created by the split
         dat['ex1'] = dat['ex1'].str.strip()
@@ -119,18 +135,68 @@ class TrainingLog(object):
         dat['volume'] = self._calculate_volume(dat)
 
         # Set the order for the columns in the DataFrame
-        column_order = ['date', 'workout_name', 'exercise_name', 'kg', 'lb', 'set_order', 'reps',
+        column_order = ['date', 'workout_name', 'exercise_name', 'kg', 'lb', 'ex_order', 'set_order', 'reps',
                         'weight', 'volume', 'ex1', 'ex2', 'p1', 'p2', 's1', 's2', 'notes',
                         'mi', 'seconds']
 
         # New version no longer has distance units in column headers, instead just 'Distance'
         #TODO Make some kind of unit Determination for distance
-        if self.new_version:
+        if new_version:
             ix = column_order.index('mi')
             column_order[ix] = 'distance'
 
+        # Ensure all columns exist... if not just fill with NA
+        for c in column_order:
+            if c not in dat:
+                dat[c] = np.nan
 
         return dat[column_order]
+
+    def add_data(self, filename, units=None):
+        """
+        Add another datafile to the log.
+
+        :param filename:
+        :param units:
+        :return:
+        """
+        # Make sure units are correct
+        assert units in ['kg', 'lbs', None]
+
+        # If the units of the new file is different from current state, do a swap.
+        changed = False
+        if units is not None:
+            if units != self.units:
+                self.change_weight_type()
+                changed = True
+        elif self._determine_units_from_file(pd.read_csv(filename, nrows=0)) is None:
+            warnings.warn('No units passed and could not determine from file, so using value {}'.format(self.units))
+
+        new_data = self.parse_csv(filename)
+        new_data = pd.concat([self.orig_data, new_data], sort=False)
+        new_data = new_data.sort_values(['date', 'ex_order', 'set_order'])
+
+        # Ensure that if newly inputted file has some data overlap, duplicates are removed
+        new_data = new_data.drop_duplicates(subset=['date', 'ex_order', 'set_order', 'reps', 'volume'])
+
+        self.orig_data = new_data.reset_index(drop=True)
+        if changed:
+            self.change_weight_type()
+
+        # Finally, keep any date range changes
+        self.set_date_range(self.get_data()['date'].min(), self.get_data()['date'].max(), inplace=True)
+
+    @staticmethod
+    def _determine_units_from_file(dat):
+        dat.columns = [c.lower() for c in dat.columns]
+        if 'kg' in dat:
+            return 'kg'
+        elif 'lb' in dat:
+            return 'lbs'
+        elif 'weight' in dat:
+            return None
+        else:
+            raise ValueError("Could not determine weight type: lb, kg, or weight not found in csv columns.")
 
     @staticmethod
     def _calculate_volume(df):
