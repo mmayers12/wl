@@ -73,6 +73,9 @@ class TrainingLog(object):
         else:
             dat['kg'] = dat['weight'].apply(lbs_to_kg)
 
+        # now that both kg and lb are in, ensure that the weight conforms to proper units
+        dat['weight'] = dat[self.units[:2]]
+
         # Determine if 0 or 1 indexed for set order and set to zero indexed
         if 0 not in dat['set_order'].values:
             dat['set_order'] -= 1
@@ -164,27 +167,30 @@ class TrainingLog(object):
         assert units in ['kg', 'lbs', None]
 
         # If the units of the new file is different from current state, do a swap.
-        changed = False
+        unit_changed = False
         if units is not None:
             if units != self.units:
                 self.change_weight_type()
-                changed = True
+                unit_changed = True
         elif self._determine_units_from_file(pd.read_csv(filename, nrows=0)) is None:
             warnings.warn('No units passed and could not determine from file, so using value {}'.format(self.units))
 
         new_data = self.parse_csv(filename)
+        # Get the full data by resetting the date range
         new_data = pd.concat([self.orig_data, new_data], sort=False)
         new_data = new_data.sort_values(['date', 'ex_order', 'set_order'])
 
         # Ensure that if newly inputted file has some data overlap, duplicates are removed
         new_data = new_data.drop_duplicates(subset=['date', 'ex_order', 'set_order', 'reps', 'volume'])
 
+        # Add in the new data to the full data set
         self.orig_data = new_data.reset_index(drop=True)
-        if changed:
-            self.change_weight_type()
 
-        # Finally, keep any date range changes
-        self.set_date_range(self.get_data()['date'].min(), self.get_data()['date'].max(), inplace=True)
+        # Reset all the data, as date range probably expanded
+        self.reset_data()
+
+        if unit_changed:
+            self.change_weight_type()
 
     @staticmethod
     def _determine_units_from_file(dat):
@@ -207,16 +213,26 @@ class TrainingLog(object):
         Switches weights reported in data from kg to lbs or vice versa.
         :return: None
         """
+        # Store date range in case subsetted
+        start_date = self.data['date'].min()
+        end_date = self.data['date'].max()
+
+        self.reset_data()
+
+        # Make all changes on the original data
         if self.units == 'kg':
-            self.data['weight'] = self.data['lb']
-            self.data['volume'] = self._calculate_volume(self.data)
+            self.orig_data['weight'] = self.orig_data['lb']
+            self.orig_data['volume'] = self._calculate_volume(self.orig_data)
             self.units = 'lbs'
         else:
-            self.data['weight'] = self.data['kg']
-            self.data['volume'] = self._calculate_volume(self.data)
+            self.orig_data['weight'] = self.orig_data['kg']
+            self.orig_data['volume'] = self._calculate_volume(self.orig_data)
             self.units = 'kg'
 
-    def get_exercise_max(self, exercise, reps=1, parent=False, calculate=True, verbose=True):
+        # Reapply any date subsets applied
+        self.set_date_range(start_date, end_date, inplace=True)
+
+    def get_exercise_max(self, exercise, reps=1, parent=False, calculate=True, verbose=True, get_date=False):
         """
         Get the maximum weight lifted for a given exercise
 
@@ -224,14 +240,17 @@ class TrainingLog(object):
         :param reps: int, the rep max to be found
         :param parent: bool, look at parent exercise class rather than specific exercises
         :param calculate: bool, calculate the rm if the number of reps has never been performed.
-        :param verbose: bool, print out information when rep max isn't in database 
+        :param verbose: bool, print out information when rep max isn't in database
+        :param get_date: bool, returns date as well as max weight. if true, return is tuple max_weight, date
         :return: float, the max weight lifted for the given number of reps
         """
 
         filtered = self.filter_exercises(exercise, parent)
 
         max_weight = filtered.query('reps >= {}'.format(reps))['weight'].max()
-        max_reps = filtered.query('weight == @max_weight')['reps'].max()
+        max_lines = filtered.query('weight == @max_weight')
+        max_reps = max_lines['reps'].max()
+        first_performed = max_lines['date'].min()
 
         if max_reps > reps:
 
@@ -246,11 +265,18 @@ class TrainingLog(object):
                     # Ensure the query worked before updating.
                     if not np.isnan(new_max_weight):
                         max_weight = new_max_weight
-                        max_reps = filtered.query('weight == @max_weight')['reps'].max()
+                        max_lines = filtered.query('weight == @max_weight')
+                        max_reps = max_lines['reps'].max()
+                        if get_date:
+                            first_performed = max_lines['date'].min()
 
                 if verbose:
                     print('Calculating {} rep max from best '.format(reps) +
-                          'attempt: {} reps at {} {}'.format(max_reps, max_weight, self.units))
+                          'attempt: {} reps at {} {}'.format(max_reps, max_weight, self.units), end=' ')
+                    if get_date:
+                        print('first performed on {}'.format(first_performed))
+                    else:
+                        print('')
 
                 # Calculate the 1rm
                 max_weight = calc_1rm(max_weight, max_reps)
@@ -262,7 +288,12 @@ class TrainingLog(object):
             else:
                 if verbose:
                     print('Reps at max weight: {}'.format(max_reps))
+                    if get_date:
+                        print('First attained on: {}'.format(first_performed))
 
+        # Return the requested data
+        if get_date:
+            return max_weight, first_performed
         return max_weight
 
     def set_parent_exercises(self, parents):
@@ -488,6 +519,9 @@ class TrainingLog(object):
     def copy(self):
         return copy.copy(self)
 
+    def reset_data(self):
+        self.data = self.orig_data.copy()
+
     def set_date_range(self, start=datetime.date(1900, 1, 1), end=datetime.date(2100, 12, 31), inplace=False):
         """
         Sets a new date range for the data
@@ -507,7 +541,8 @@ class TrainingLog(object):
 
         if inplace:
             # Set the new date range
-            self.data = self.orig_data.query(q_str).reset_index(drop=True)
+            self.reset_data()
+            self.data = self.data.query(q_str).reset_index(drop=True)
         else:
             out = self.copy()
             out.data = out.orig_data.query(q_str).reset_index(drop=True)
@@ -534,12 +569,13 @@ class TrainingLog(object):
         """
 
         # Cut dates for before and after the split
-        before_data = self.set_date_range(start=previous_pr_start_date, end=cycle_start_date)
+        previous_end_date = self._format_date(cycle_start_date) - datetime.timedelta(1)
+        before_data = self.set_date_range(start=previous_pr_start_date, end=previous_end_date)
         after_data = self.set_date_range(start=cycle_start_date, end=cycle_end_date)
 
         # Most useful column order for output
         col_order = ['exercise', 'reps', 'previous_max', 'new_max', 'weight_increase', 'rep_increase', 'new_reps',
-                     'absolute_max']
+                     'absolute_max', 'original_date', 'new_date']
 
         # Find exercises logged both before and after the split
         common_exercises = (set(before_data.get_data()['ex1'].unique()) |
@@ -558,16 +594,20 @@ class TrainingLog(object):
         before_maxes = []
         for ex in exercises:
             for num_reps in rep_range:
-                rep_max = before_data.get_exercise_max(ex, num_reps, calculate=False, verbose=False)
-                before_maxes.append({'exercise': ex, 'reps': num_reps, 'previous_max': rep_max})
+                rep_max, first_performed = before_data.get_exercise_max(ex, num_reps, calculate=False, verbose=False,
+                                                                        get_date=True)
+                before_maxes.append({'exercise': ex, 'reps': num_reps, 'previous_max': rep_max,
+                                     'original_date': first_performed})
         before_maxes = pd.DataFrame(before_maxes).fillna(0)
 
         # And grab all for after split date
         after_maxes = []
         for ex in exercises:
             for num_reps in rep_range:
-                rep_max = after_data.get_exercise_max(ex, num_reps, calculate=False, verbose=False)
-                after_maxes.append({'exercise': ex, 'reps': num_reps, 'new_max': rep_max})
+                rep_max, first_performed = after_data.get_exercise_max(ex, num_reps, calculate=False, verbose=False,
+                                                                       get_date=True)
+                after_maxes.append({'exercise': ex, 'reps': num_reps, 'new_max': rep_max,
+                                    'new_date': first_performed})
         after_maxes = pd.DataFrame(after_maxes).fillna(0)
 
         # Merge exercises and reps so new weights for a given rep-scheme are paired
